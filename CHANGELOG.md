@@ -18,6 +18,10 @@ sense.
 
 ### Added
 
+- **contracts**: admin-only `pause`/`unpause` on `contracts/verifier`, an
+  emergency stop that makes `verify_proof`/`verify_batch` reject every
+  call with `Error::ContractPaused` until unpaused, plus a public
+  `is_paused()` getter (#44).
 - **contracts**: two-step admin transfer (`propose_admin`/`accept_admin`)
   and self-upgrade (`upgrade`) for `contracts/verifier` and
   `contracts/registry`, so a deployed instance's logic can be replaced

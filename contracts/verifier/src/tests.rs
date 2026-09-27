@@ -637,7 +637,7 @@ fn get_config_returns_initialized_values() {
     // Rate-limit fields reflect the constructor arguments.
     assert_eq!(config.rate_limit_max, 7);
     assert_eq!(config.rate_limit_window, 42);
-    // Unimplemented features are zero-valued / absent.
+    // Not paused by default; still-unimplemented features are zero-valued / absent.
     assert!(!config.paused);
     assert!(config.fee_amount.is_none());
     assert!(config.fee_token.is_none());
@@ -794,6 +794,102 @@ fn remove_from_allowlist_rejects_call_with_no_authorization() {
     let user = Address::generate(&env);
 
     client.remove_from_allowlist(&user);
+}
+
+#[test]
+fn is_paused_defaults_to_false() {
+    let (_env, _admin, client) = setup(10, 100);
+
+    assert!(!client.is_paused());
+}
+
+#[test]
+fn verify_proof_blocked_when_paused() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    client.pause();
+    assert!(client.is_paused());
+
+    let result = client.try_verify_proof(
+        &caller,
+        &Bytes::from_array(&env, &VALID_PROOF_A),
+        &Bytes::from_array(&env, &VALID_PROOF_B),
+        &Bytes::from_array(&env, &VALID_PROOF_C),
+        &public_inputs_with_expiry(&env, u32::MAX),
+    );
+
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn verify_batch_blocked_when_paused() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+    let item = ProofItem {
+        proof_a: Bytes::from_array(&env, &VALID_PROOF_A),
+        proof_b: Bytes::from_array(&env, &VALID_PROOF_B),
+        proof_c: Bytes::from_array(&env, &VALID_PROOF_C),
+        public_inputs: public_inputs_with_expiry(&env, u32::MAX),
+    };
+
+    client.pause();
+
+    let result = client.try_verify_batch(&caller, &vec![&env, item]);
+
+    assert_eq!(result, Err(Ok(Error::ContractPaused)));
+}
+
+#[test]
+fn verify_proof_works_after_unpause() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    let caller = Address::generate(&env);
+
+    client.pause();
+    client.unpause();
+    assert!(!client.is_paused());
+
+    assert!(call_with_expiry(&env, &client, &caller, 1000));
+}
+
+#[test]
+fn get_config_reflects_paused_state() {
+    let (_env, _admin, client) = setup(10, 100);
+
+    assert!(!client.get_config().paused);
+
+    client.pause();
+    assert!(client.get_config().paused);
+
+    client.unpause();
+    assert!(!client.get_config().paused);
+}
+
+#[test]
+#[should_panic]
+fn pause_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let vk = poseidon_vk(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let client = VerifierContractClient::new(&env, &contract_id);
+
+    client.pause();
+}
+
+#[test]
+#[should_panic]
+fn unpause_rejects_call_with_no_authorization() {
+    let env = Env::default();
+    let admin = Address::generate(&env);
+    let vk = poseidon_vk(&env);
+    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let client = VerifierContractClient::new(&env, &contract_id);
+
+    client.unpause();
 }
 
 // The verify_proof tests above already exercise the storage-backed VK
