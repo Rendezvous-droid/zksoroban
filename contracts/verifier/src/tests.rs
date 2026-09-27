@@ -101,12 +101,20 @@ fn poseidon_vk(env: &Env) -> VerifyingKey {
     }
 }
 
+/// Used by every test below that doesn't care about the exact
+/// `vk_update_delay` value — the propose/execute-timing tests further
+/// down set their own delay explicitly instead of using `setup`.
+const DEFAULT_VK_UPDATE_DELAY: u32 = 50;
+
 fn setup(max_calls: u32, window_size: u32) -> (Env, Address, VerifierContractClient<'static>) {
     let env = Env::default();
     env.mock_all_auths();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin.clone(), max_calls, window_size, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin.clone(), max_calls, window_size, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
     (env, admin, client)
 }
@@ -664,11 +672,12 @@ fn get_config_returns_initialized_values() {
     // Rate-limit fields reflect the constructor arguments.
     assert_eq!(config.rate_limit_max, 7);
     assert_eq!(config.rate_limit_window, 42);
-    // Unimplemented features are zero-valued / absent.
+    // Reflects the constructor's vk_update_delay argument.
+    assert_eq!(config.timelock_delay, Some(DEFAULT_VK_UPDATE_DELAY));
+    // Still-unimplemented features are zero-valued / absent.
     assert!(!config.paused);
     assert!(config.fee_amount.is_none());
     assert!(config.fee_token.is_none());
-    assert!(config.timelock_delay.is_none());
     // Allowlisting is implemented but off by default until enabled.
     assert!(!config.allowlist_enabled);
 }
@@ -709,7 +718,10 @@ fn verify_proof_rejects_call_with_no_authorization() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
     let caller = Address::generate(&env);
 
@@ -722,7 +734,10 @@ fn set_limits_rejects_call_with_no_authorization() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
 
     client.set_limits(&5, &50);
@@ -791,7 +806,10 @@ fn set_allowlist_mode_rejects_call_with_no_authorization() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
 
     client.set_allowlist_mode(&true);
@@ -803,7 +821,10 @@ fn add_to_allowlist_rejects_call_with_no_authorization() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
     let user = Address::generate(&env);
 
@@ -816,7 +837,10 @@ fn remove_from_allowlist_rejects_call_with_no_authorization() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
     let user = Address::generate(&env);
 
@@ -825,26 +849,101 @@ fn remove_from_allowlist_rejects_call_with_no_authorization() {
 
 // The verify_proof tests above already exercise the storage-backed VK
 // path implicitly (there are no more compile-time VK constants to fall
-// back to). These two tests exercise update_vk directly: that a fresh
-// key actually takes effect, and that only the admin can install one.
+// back to). The tests below exercise the propose_vk_update/
+// execute_vk_update timelock directly (zksoroban#46): that a proposal
+// is stored with the right effective ledger, that execution is rejected
+// before that ledger and permitted at/after it, and that only the admin
+// can propose while execution itself is permissionless.
 
 #[test]
-fn admin_can_update_vk_and_verification_still_works_with_it() {
+fn propose_vk_update_stores_pending_update_with_effective_ledger() {
     let (env, _admin, client) = setup(10, 100);
     env.ledger().with_mut(|li| li.sequence_number = 100);
 
-    // Re-registering the same known-good key is enough to prove the
-    // contract is reading whatever update_vk last stored, not a
-    // leftover compile-time value — there is no compile-time value left
-    // to fall back to.
-    client.update_vk(&poseidon_vk(&env));
+    assert!(client.get_pending_vk_update().is_none());
 
-    let caller = Address::generate(&env);
-    assert!(call_with_expiry(&env, &client, &caller, 1000));
+    client.propose_vk_update(&poseidon_vk(&env));
+
+    let (_vk, effective_ledger) = client.get_pending_vk_update().unwrap();
+    assert_eq!(effective_ledger, 100 + DEFAULT_VK_UPDATE_DELAY);
 }
 
 #[test]
-fn update_vk_rejects_wrong_ic_length() {
+fn execute_vk_update_rejects_before_the_effective_ledger() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    client.propose_vk_update(&poseidon_vk(&env));
+
+    env.ledger()
+        .with_mut(|li| li.sequence_number = 100 + DEFAULT_VK_UPDATE_DELAY - 1);
+    let result = client.try_execute_vk_update();
+
+    assert_eq!(result, Err(Ok(Error::TimelockNotElapsed)));
+    // Rejected execution leaves the proposal in place, still pending.
+    assert!(client.get_pending_vk_update().is_some());
+}
+
+#[test]
+fn execute_vk_update_succeeds_at_exactly_the_effective_ledger() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    client.propose_vk_update(&poseidon_vk(&env));
+
+    env.ledger()
+        .with_mut(|li| li.sequence_number = 100 + DEFAULT_VK_UPDATE_DELAY);
+    client.execute_vk_update();
+
+    assert!(client.get_pending_vk_update().is_none());
+    let caller = Address::generate(&env);
+    assert!(call_with_expiry(&env, &client, &caller, u32::MAX));
+}
+
+#[test]
+fn execute_vk_update_succeeds_after_the_effective_ledger() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    client.propose_vk_update(&poseidon_vk(&env));
+
+    env.ledger()
+        .with_mut(|li| li.sequence_number = 100 + DEFAULT_VK_UPDATE_DELAY + 10);
+    client.execute_vk_update();
+
+    assert!(client.get_pending_vk_update().is_none());
+    let caller = Address::generate(&env);
+    assert!(call_with_expiry(&env, &client, &caller, u32::MAX));
+}
+
+#[test]
+fn execute_vk_update_rejects_when_nothing_is_pending() {
+    let (_env, _admin, client) = setup(10, 100);
+
+    let result = client.try_execute_vk_update();
+
+    assert_eq!(result, Err(Ok(Error::NoPendingVkUpdate)));
+}
+
+#[test]
+fn execute_vk_update_is_permissionless() {
+    let (env, _admin, client) = setup(10, 100);
+    env.ledger().with_mut(|li| li.sequence_number = 100);
+    client.propose_vk_update(&poseidon_vk(&env));
+    env.ledger()
+        .with_mut(|li| li.sequence_number = 100 + DEFAULT_VK_UPDATE_DELAY);
+
+    // .mock_auths(&[]) scopes to just this one call, declaring *zero*
+    // authorized addresses for it -- overriding setup()'s blanket
+    // mock_all_auths() for this invocation only. If execute_vk_update
+    // called require_auth() on anything, this call would fail the same
+    // way the *_rejects_call_with_no_authorization tests elsewhere do.
+    // It doesn't, because execute_vk_update takes no caller argument and
+    // never calls require_auth at all.
+    client.mock_auths(&[]).execute_vk_update();
+
+    assert!(client.get_pending_vk_update().is_none());
+}
+
+#[test]
+fn propose_vk_update_rejects_wrong_ic_length() {
     let (env, _admin, client) = setup(10, 100);
 
     let bad_vk = VerifyingKey {
@@ -855,20 +954,24 @@ fn update_vk_rejects_wrong_ic_length() {
         ic: vec![&env, BytesN::from_array(&env, &VK_IC0_G1)],
     };
 
-    let result = client.try_update_vk(&bad_vk);
+    let result = client.try_propose_vk_update(&bad_vk);
     assert_eq!(result, Err(Ok(Error::InvalidVerifyingKey)));
+    assert!(client.get_pending_vk_update().is_none());
 }
 
 #[test]
 #[should_panic]
-fn update_vk_rejects_call_with_no_authorization() {
+fn propose_vk_update_rejects_call_with_no_authorization() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
 
-    client.update_vk(&poseidon_vk(&env));
+    client.propose_vk_update(&poseidon_vk(&env));
 }
 
 // verification_result event coverage: one test per outcome path that
@@ -1219,7 +1322,10 @@ fn verify_batch_rejects_call_with_no_authorization() {
     let env = Env::default();
     let admin = Address::generate(&env);
     let vk = poseidon_vk(&env);
-    let contract_id = env.register(VerifierContract, (admin, 10u32, 100u32, vk));
+    let contract_id = env.register(
+        VerifierContract,
+        (admin, 10u32, 100u32, vk, DEFAULT_VK_UPDATE_DELAY),
+    );
     let client = VerifierContractClient::new(&env, &contract_id);
     let caller = Address::generate(&env);
 

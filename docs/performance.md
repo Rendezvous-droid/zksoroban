@@ -77,7 +77,8 @@ the real wasm target:
 `Bn254G2CheckPointInSubgroup` runs once per G2 point handed to
 `pairing_check` — here, `proof_b`, `vk_beta`, `vk_gamma`, and `vk_delta`,
 four points, even though `vk_beta`/`vk_gamma`/`vk_delta` are the same
-bytes on every single call (they only change on `update_vk`). The
+bytes on every single call (they only change once `execute_vk_update`
+applies a proposed key). The
 Soroban host has no way to know that from inside one `pairing_check`
 call, so it re-validates all four every time. That's the real
 instruction sink, not the byte-decoding step this issue targeted, and

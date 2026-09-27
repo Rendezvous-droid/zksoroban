@@ -183,15 +183,16 @@ The contract:
 7. returns `true` or `false`
 
 The verifying key is set at construction time (`__constructor` takes a
-`VerifyingKey` argument alongside `admin`) and can be replaced later via
-`update_vk`, which requires the stored admin's auth and validates the
-new key's `ic` length matches what this circuit's public-input count
-expects. This means a circuit's verifying key can now be rotated without
-a full contract redeploy — the original motivation for this design (see
+`VerifyingKey` argument alongside `admin`) and can be replaced later —
+this means a circuit's verifying key can now be rotated without a full
+contract redeploy, the original motivation for this design (see
 [zksoroban#9](https://github.com/yusufadeagbo/zksoroban/issues/9)) — at
 the cost of a real trust-model change: see
 [`docs/security-model.md`](security-model.md)'s Trust Assumptions for
-what a compromised admin key can now do that it couldn't before.
+what a compromised admin key can now do that it couldn't before. As of
+[zksoroban#46](https://github.com/yusufadeagbo/zksoroban/issues/46),
+that replacement is timelocked rather than immediate — see "Timelocked
+Verifying-Key Updates" below.
 
 Current Testnet deployment:
 `CBL6MAWJALQP25LYKUUOC34K464XPSF6BLKUW6MXZDEXEDXMQUSP7HNN`
@@ -257,6 +258,50 @@ so an attacker cannot mint unbounded distinct commitments to grow
 storage. The counter increments only on a successful pairing check —
 failed proof attempts do not affect the count. The admin can call
 `upgrade` to redeploy from scratch if storage ever becomes a concern.
+
+### Timelocked Verifying-Key Updates
+
+Per [zksoroban#46](https://github.com/yusufadeagbo/zksoroban/issues/46),
+replacing the verifying key is no longer a single immediate call — the
+old `update_vk` is gone, replaced by a two-step propose/execute flow with
+a mandatory delay in between:
+
+1. `propose_vk_update(vk)` — requires the stored admin's auth, validates
+   `vk.ic.len()` the same way `update_vk` used to, and stores `(vk,
+   effective_ledger)` where `effective_ledger = env.ledger().sequence() +
+   vk_update_delay`. `vk_update_delay` is fixed at construction (a new
+   `__constructor` argument) — there's no way to shorten a delay already
+   in effect for a pending proposal, only for the *next* one, since the
+   delay isn't itself timelocked.
+2. `execute_vk_update()` — applies the pending proposal once
+   `env.ledger().sequence() >= effective_ledger`, `Err(TimelockNotElapsed)`
+   before that, `Err(NoPendingVkUpdate)` if nothing is proposed.
+   **Deliberately permissionless** — it takes no caller argument and
+   calls no `require_auth` at all. The thing actually being enforced is
+   the admin's own prior commitment (the delay it can't retroactively
+   shorten), not a fresh authorization; requiring the admin to also
+   execute would let a compromised key simply delay execution
+   indefinitely instead of ever completing a proposal it no longer
+   wants scrutinized, defeating the "give users time to detect and
+   react" goal outright.
+3. `get_pending_vk_update() -> Option<(VerifyingKey, u32)>` — read-only,
+   no auth, so anyone (including off-chain monitoring) can see a pending
+   change and its effective ledger before it lands. Also surfaced as
+   `get_config().timelock_delay` (the fixed delay itself, not any
+   pending proposal's specific effective ledger).
+
+A second `propose_vk_update` before the first executes replaces it
+outright — there is only ever one pending update, not a queue, and the
+delay restarts against the new proposal's ledger.
+
+Nothing else on this contract is timelocked — `set_limits`, allowlist
+management, `upgrade`, and the admin-transfer flow (see "Admin Ownership
+& Contract Upgrades" below) all still take effect immediately. Only the
+verifying key gets this treatment, because installing a malicious VK is
+the one admin action that breaks *soundness* rather than just
+availability or rate-limiting (see `docs/security-model.md`'s Trust
+Assumptions) — exactly the escalation this issue's timelock exists to
+put a visible, delayable window in front of.
 
 ## Events
 

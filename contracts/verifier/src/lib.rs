@@ -47,7 +47,8 @@ pub struct ContractConfig {
     pub rate_limit_max: u32,
     /// Rate-limit window size in ledgers.
     pub rate_limit_window: u32,
-    /// Timelock delay in ledgers (not implemented; always `None`).
+    /// Ledgers a proposed verifying key update must wait before
+    /// `execute_vk_update` will accept it — see `propose_vk_update`.
     pub timelock_delay: Option<u32>,
     /// Whether the caller allowlist is currently enforced.
     pub allowlist_enabled: bool,
@@ -63,6 +64,8 @@ enum DataKey {
     AllowlistEnabled,
     Allowlist(Address),
     VerificationCount(BytesN<32>),
+    VkUpdateDelay,
+    PendingVkUpdate,
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -91,7 +94,14 @@ pub struct VerifierContract;
 
 #[contractimpl]
 impl VerifierContract {
-    pub fn __constructor(env: Env, admin: Address, max_calls: u32, window_size: u32, vk: VerifyingKey) {
+    pub fn __constructor(
+        env: Env,
+        admin: Address,
+        max_calls: u32,
+        window_size: u32,
+        vk: VerifyingKey,
+        vk_update_delay: u32,
+    ) {
         assert!(window_size > 0, "window_size must be positive");
         assert!(
             vk.ic.len() == EXPECTED_PUBLIC_INPUT_COUNT,
@@ -103,6 +113,9 @@ impl VerifierContract {
             .instance()
             .set(&DataKey::Limits, &Limits { max_calls, window_size });
         env.storage().instance().set(&DataKey::Vk, &vk);
+        env.storage()
+            .instance()
+            .set(&DataKey::VkUpdateDelay, &vk_update_delay);
     }
 
     pub fn limits(env: Env) -> Limits {
@@ -150,7 +163,13 @@ impl VerifierContract {
         Ok(())
     }
 
-    pub fn update_vk(env: Env, vk: VerifyingKey) -> Result<(), Error> {
+    /// Propose `vk` as the next verifying key. Requires the stored admin's
+    /// auth. Does not take effect until `execute_vk_update` is called no
+    /// earlier than `vk_update_delay` ledgers from now (the delay fixed at
+    /// construction) — see [zksoroban#46](https://github.com/yusufadeagbo/zksoroban/issues/46).
+    /// A second `propose_vk_update` call before the first one executes
+    /// replaces it outright, resetting the delay against the new proposal.
+    pub fn propose_vk_update(env: Env, vk: VerifyingKey) -> Result<(), Error> {
         if vk.ic.len() != EXPECTED_PUBLIC_INPUT_COUNT {
             return Err(Error::InvalidVerifyingKey);
         }
@@ -162,8 +181,45 @@ impl VerifierContract {
             .ok_or(Error::NotInitialized)?;
         admin.require_auth();
 
-        env.storage().instance().set(&DataKey::Vk, &vk);
+        let delay: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VkUpdateDelay)
+            .ok_or(Error::NotInitialized)?;
+        let effective_ledger = env.ledger().sequence() + delay;
+
+        env.storage()
+            .instance()
+            .set(&DataKey::PendingVkUpdate, &(vk, effective_ledger));
         Ok(())
+    }
+
+    /// Apply the currently-proposed verifying key update. Permissionless —
+    /// anyone can call this, not just the admin — because by the time the
+    /// delay has elapsed the change was already publicly visible via
+    /// `get_pending_vk_update`; what's actually being enforced is the
+    /// admin's own timelock on itself, not a fresh authorization.
+    pub fn execute_vk_update(env: Env) -> Result<(), Error> {
+        let (vk, effective_ledger): (VerifyingKey, u32) = env
+            .storage()
+            .instance()
+            .get(&DataKey::PendingVkUpdate)
+            .ok_or(Error::NoPendingVkUpdate)?;
+
+        if env.ledger().sequence() < effective_ledger {
+            return Err(Error::TimelockNotElapsed);
+        }
+
+        env.storage().instance().set(&DataKey::Vk, &vk);
+        env.storage().instance().remove(&DataKey::PendingVkUpdate);
+        Ok(())
+    }
+
+    /// The currently-proposed verifying key update, if any: the proposed
+    /// key and the ledger sequence at/after which `execute_vk_update` will
+    /// succeed. `None` once executed, or if nothing has been proposed.
+    pub fn get_pending_vk_update(env: Env) -> Option<(VerifyingKey, u32)> {
+        env.storage().instance().get(&DataKey::PendingVkUpdate)
     }
 
     pub fn set_allowlist_mode(env: Env, enabled: bool) -> Result<(), Error> {
@@ -243,6 +299,12 @@ impl VerifierContract {
             .get(&DataKey::AllowlistEnabled)
             .unwrap_or(false);
 
+        let vk_update_delay: u32 = env
+            .storage()
+            .instance()
+            .get(&DataKey::VkUpdateDelay)
+            .ok_or(Error::NotInitialized)?;
+
         Ok(ContractConfig {
             admin,
             paused: false,
@@ -250,7 +312,7 @@ impl VerifierContract {
             fee_token: None,
             rate_limit_max: limits.max_calls,
             rate_limit_window: limits.window_size,
-            timelock_delay: None,
+            timelock_delay: Some(vk_update_delay),
             allowlist_enabled,
         })
     }
