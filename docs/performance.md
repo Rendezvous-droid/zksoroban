@@ -158,9 +158,14 @@ make update-verifier-cost-baseline  # build the wasm, re-measure, and overwrite 
 
 Both build the release wasm first — the test panics with a clear message
 naming the missing file and the exact command to run if it isn't already
-built. CI's `contract` job runs `verifier-cost-check`'s two steps
-(build, then the regression test) right after the existing `cargo test`
-steps for all four contract crates.
+built. CI's `contract` job builds the release wasm right before
+`cargo test --manifest-path contracts/verifier/Cargo.toml` — that plain
+`cargo test` call runs every test target under that manifest, including
+`tests/cost_regression.rs`, so the wasm has to exist *before* that step
+runs, not after it. (An earlier version of this had the build step
+*after* that test step, which passed locally only because a wasm from an
+earlier manual build was already sitting there — CI starts from a clean
+checkout every time and caught it immediately.)
 
 ### Interpreting a failure
 
