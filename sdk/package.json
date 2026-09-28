@@ -27,7 +27,8 @@
     "build:types": "tsc -p tsconfig.types.json",
     "build:browser": "vite build",
     "lint": "tsc -p tsconfig.json --noEmit",
-    "test": "npm run build && tsx --test --test-force-exit test/**/*.ts",
+    "test": "npm run build && tsx --test --require ./test/snapshot-setup.ts --test-force-exit test/**/*.ts",
+    "test:unit": "npm test",
     "test:golden": "tsx scripts/golden.ts"
   },
   "dependencies": {
