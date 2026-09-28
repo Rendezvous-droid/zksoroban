@@ -1,10 +1,11 @@
 #![no_std]
 
 use soroban_sdk::{
-    contract, contracterror, contractevent, contractimpl, contracttype,
+    contract, contractevent, contractimpl, contracttype,
     crypto::bn254::{Bn254Fr, Bn254G1Affine, Bn254G2Affine, BN254_G1_SERIALIZED_SIZE, BN254_G2_SERIALIZED_SIZE},
     vec, Address, Bytes, BytesN, Env, String, Vec,
 };
+use zksoroban_verifier_interface::{Error, VerifierInterface};
 
 const PROOF_A_LEN: usize = BN254_G1_SERIALIZED_SIZE;
 const PROOF_B_LEN: usize = BN254_G2_SERIALIZED_SIZE;
@@ -427,6 +428,42 @@ impl VerifierContract {
         }
 
         Ok(results)
+    }
+}
+
+/// Published as `zksoroban-verifier-interface`'s `VerifierInterface` trait
+/// so another Soroban contract can call `verify_proof` through the
+/// generated `VerifierClient` instead of hand-writing the cross-contract
+/// invocation — see `docs/architecture.md`'s "Cross-Contract Interface"
+/// section and `contracts/examples/proof-gate`.
+#[contractimpl]
+impl VerifierInterface for VerifierContract {
+    fn verify_proof(
+        env: Env,
+        caller: Address,
+        proof_a: Bytes,
+        proof_b: Bytes,
+        proof_c: Bytes,
+        public_inputs: Vec<BytesN<32>>,
+    ) -> Result<bool, Error> {
+        caller.require_auth();
+
+        let item = ProofItem {
+            proof_a,
+            proof_b,
+            proof_c,
+            public_inputs,
+        };
+        let result = verify_one(&env, &caller, &item);
+
+        // Same rule as before: only publish on an Ok(...) outcome. An Err(...)
+        // here rolls back the whole call (see the note on publish_verification_result),
+        // so publishing first would be a silent no-op.
+        if let Ok(success) = result {
+            publish_verification_result(&env, &caller, success, &item.public_inputs);
+        }
+
+        result
     }
 }
 
