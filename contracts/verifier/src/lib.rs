@@ -66,20 +66,6 @@ enum DataKey {
     Paused,
 }
 
-#[contracterror]
-#[derive(Copy, Clone, Debug, Eq, PartialEq)]
-#[repr(u32)]
-pub enum Error {
-    NotInitialized = 1,
-    RateLimitExceeded = 2,
-    InvalidWindowSize = 3,
-    ProofExpired = 4,
-    CallerNotAllowed = 5,
-    InvalidVerifyingKey = 6,
-    NoPendingAdmin = 7,
-    ContractPaused = 8,
-}
-
 /// Emitted on every `verify_proof` call, regardless of outcome.
 #[contractevent(topics = ["zk", "verify"])]
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -358,37 +344,6 @@ impl VerifierContract {
         Ok(())
     }
 
-    pub fn verify_proof(
-        env: Env,
-        caller: Address,
-        proof_a: Bytes,
-        proof_b: Bytes,
-        proof_c: Bytes,
-        public_inputs: Vec<BytesN<32>>,
-    ) -> Result<bool, Error> {
-        if is_contract_paused(&env) {
-            return Err(Error::ContractPaused);
-        }
-        caller.require_auth();
-
-        let item = ProofItem {
-            proof_a,
-            proof_b,
-            proof_c,
-            public_inputs,
-        };
-        let result = verify_one(&env, &caller, &item);
-
-        // Same rule as before: only publish on an Ok(...) outcome. An Err(...)
-        // here rolls back the whole call (see the note on publish_verification_result),
-        // so publishing first would be a silent no-op.
-        if let Ok(success) = result {
-            publish_verification_result(&env, &caller, success, &item.public_inputs);
-        }
-
-        result
-    }
-
     /// Verify a batch of proofs from one caller in a single call. Each proof
     /// is still subject to its own allowlist/rate-limit/expiry check, applied
     /// in order — an earlier proof in the batch that consumes rate-limit
@@ -446,6 +401,9 @@ impl VerifierInterface for VerifierContract {
         proof_c: Bytes,
         public_inputs: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
+        if is_contract_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
         caller.require_auth();
 
         let item = ProofItem {
