@@ -31,7 +31,19 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
       - run: cargo test --manifest-path contracts/verifier-interface/Cargo.toml --locked
+      # `cargo test --manifest-path contracts/verifier/Cargo.toml` below
+      # picks up every test target under that manifest, including
+      # tests/cost_regression.rs — which needs the release wasm to already
+      # exist (it measures the real compiled contract, not the native Rust
+      # test harness; see docs/performance.md's "CI Cost Regression Check",
+      # per zksoroban#74). So this has to run *before* that test step, not
+      # after — the cost check isn't a separate step, it's already part of
+      # the test run below.
+      - name: Build verifier release wasm
+        run: cargo build --manifest-path contracts/verifier/Cargo.toml --target wasm32v1-none --release --locked
       - run: cargo test --manifest-path contracts/verifier/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/registry/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/examples/proof-gate/Cargo.toml --locked

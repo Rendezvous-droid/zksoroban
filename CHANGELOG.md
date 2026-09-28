@@ -25,6 +25,15 @@ sense.
   `execute_vk_update` is permissionless once the delay elapses;
   `get_pending_vk_update()` exposes the pending change and its effective
   ledger to anyone watching (#46).
+- **testing**: CI regression check for `verify_proof`'s instruction cost
+  (`contracts/verifier/tests/cost_regression.rs`) — fails if it exceeds
+  `contracts/verifier/baseline-cost.json`'s baseline by more than 10%.
+  `make verifier-cost-check` / `make update-verifier-cost-baseline` run
+  it locally and refresh the baseline intentionally, respectively (#74).
+- **contracts**: admin-only `pause`/`unpause` on `contracts/verifier`, an
+  emergency stop that makes `verify_proof`/`verify_batch` reject every
+  call with `Error::ContractPaused` until unpaused, plus a public
+  `is_paused()` getter (#44).
 - **contracts**: two-step admin transfer (`propose_admin`/`accept_admin`)
   and self-upgrade (`upgrade`) for `contracts/verifier` and
   `contracts/registry`, so a deployed instance's logic can be replaced

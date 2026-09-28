@@ -37,7 +37,7 @@ pub struct Limits {
 pub struct ContractConfig {
     /// The contract administrator address.
     pub admin: Address,
-    /// Whether the contract is paused (not implemented; always `false`).
+    /// Whether the contract is paused — see `pause`/`unpause`.
     pub paused: bool,
     /// Optional fee amount in stroops (not implemented; always `None`).
     pub fee_amount: Option<i128>,
@@ -66,6 +66,7 @@ enum DataKey {
     VerificationCount(BytesN<32>),
     VkUpdateDelay,
     PendingVkUpdate,
+    Paused,
 }
 
 /// Emitted on every `verify_proof` call, regardless of outcome.
@@ -243,6 +244,44 @@ impl VerifierContract {
             .unwrap_or(false)
     }
 
+    /// Emergency stop: while paused, `verify_proof`/`verify_batch` reject
+    /// every call with `Error::ContractPaused` before doing anything else
+    /// (no auth check, no rate-limit read, no proof parsing). Requires the
+    /// stored admin's auth. Does not affect any other entry point — the
+    /// admin can still call `propose_vk_update`/`execute_vk_update`/
+    /// `upgrade`/`unpause` etc. while paused, since those are exactly how
+    /// a real incident gets resolved.
+    pub fn pause(env: Env) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Paused, &true);
+        Ok(())
+    }
+
+    /// Clears the pause flag `pause` set. Requires the stored admin's auth.
+    pub fn unpause(env: Env) -> Result<(), Error> {
+        let admin: Address = env
+            .storage()
+            .instance()
+            .get(&DataKey::Admin)
+            .ok_or(Error::NotInitialized)?;
+        admin.require_auth();
+
+        env.storage().instance().set(&DataKey::Paused, &false);
+        Ok(())
+    }
+
+    /// Whether `pause` is currently in effect. `false` until `pause` has
+    /// ever been called (the constructor doesn't set this explicitly).
+    pub fn is_paused(env: Env) -> bool {
+        is_contract_paused(&env)
+    }
+
     pub fn add_to_allowlist(env: Env, addr: Address) -> Result<(), Error> {
         let admin: Address = env
             .storage()
@@ -307,7 +346,7 @@ impl VerifierContract {
 
         Ok(ContractConfig {
             admin,
-            paused: false,
+            paused: is_contract_paused(&env),
             fee_amount: None,
             fee_token: None,
             rate_limit_max: limits.max_calls,
@@ -390,6 +429,9 @@ impl VerifierContract {
         caller: Address,
         proofs: Vec<ProofItem>,
     ) -> Result<Vec<bool>, Error> {
+        if is_contract_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
         caller.require_auth();
 
         let mut results = Vec::new(&env);
@@ -422,6 +464,9 @@ impl VerifierInterface for VerifierContract {
         proof_c: Bytes,
         public_inputs: Vec<BytesN<32>>,
     ) -> Result<bool, Error> {
+        if is_contract_paused(&env) {
+            return Err(Error::ContractPaused);
+        }
         caller.require_auth();
 
         let item = ProofItem {
@@ -574,6 +619,13 @@ fn compute_inputs_hash(env: &Env, public_inputs: &Vec<BytesN<32>>) -> BytesN<32>
         bytes.append(&Bytes::from(&input));
     }
     env.crypto().sha256(&bytes).to_bytes()
+}
+
+fn is_contract_paused(env: &Env) -> bool {
+    env.storage()
+        .instance()
+        .get(&DataKey::Paused)
+        .unwrap_or(false)
 }
 
 fn read_expiry_ledger(bytes: &BytesN<32>) -> Option<u32> {

@@ -54,6 +54,7 @@ repeat read-only requests are.
 Useful maintenance commands:
 
 - `make lint`: run Rust formatting, clippy, and TypeScript checks.
+- `make verifier-cost-check`: fail if `verify_proof`'s instruction cost regressed more than 10% — see [docs/performance.md](docs/performance.md#ci-cost-regression-check).
 - `make circuits`: compile and verify the reference Poseidon preimage circuit.
 - `make clean`: remove generated Rust, SDK, demo, and circuit build artifacts.
 

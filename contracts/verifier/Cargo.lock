@@ -1907,6 +1907,7 @@ dependencies = [
 name = "zksoroban-verifier"
 version = "0.1.0"
 dependencies = [
+ "serde_json",
  "soroban-sdk",
  "zksoroban-verifier-interface",
 ]

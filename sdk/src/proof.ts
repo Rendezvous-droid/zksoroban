@@ -106,7 +106,8 @@ const MAX_U32 = 0xffffffff;
 export function formatProof(
   proof: SnarkjsProof,
   publicSignals: string[],
-  expiryLedger?: number
+  expiryLedger?: number,
+  vk?: VerificationKey
 ): SorobanProofCalldata {
   validateProofInput(proof, publicSignals);
 
@@ -129,6 +130,22 @@ export function formatProof(
       "publicSignals must be an array of field elements",
       SorobanZkErrorCode.INVALID_PUBLIC_INPUT
     );
+  }
+
+  if (vk !== undefined) {
+    if (typeof vk.nPublic !== "number" || !Number.isInteger(vk.nPublic) || vk.nPublic < 0) {
+      throw new SorobanZkError(
+        "vk.nPublic must be a non-negative integer",
+        SorobanZkErrorCode.INVALID_PUBLIC_INPUT
+      );
+    }
+
+    if (publicSignals.length !== vk.nPublic) {
+      throw new SorobanZkError(
+        `publicSignals count mismatch: expected ${vk.nPublic} (per vk.nPublic), got ${publicSignals.length}`,
+        SorobanZkErrorCode.INVALID_PUBLIC_INPUT
+      );
+    }
   }
 
   const publicInputs = encodePublicInputs(publicSignals);

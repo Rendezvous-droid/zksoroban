@@ -101,6 +101,17 @@ What `zksoroban` actually provides, end to end:
   attacker-controlled address the real admin never agreed to) but does
   nothing to limit what an *already-compromised, still-current* admin
   key can do — that key alone is sufficient to upgrade the contract.
+- **The admin key can now halt verification entirely, on demand.** As of
+  `pause`/`unpause` (see
+  [zksoroban#44](https://github.com/yusufadeagbo/zksoroban/issues/44)),
+  the admin can make every `verify_proof`/`verify_batch` call fail with
+  `Error::ContractPaused`, with no timelock and no automatic unpause.
+  Unlike `update_vk`/`upgrade` above, this is an availability-only
+  escalation, not a soundness one — a paused contract rejects valid
+  proofs, it never accepts invalid ones — but it means a compromised or
+  malicious admin key can deny service to every legitimate caller
+  indefinitely, which this document didn't need to account for before
+  this existed.
 - **The BN254 pairing and Poseidon hash are assumed secure.** Like any
   Groth16/BN254 system, this stack inherits the standard cryptographic
   assumptions of that curve and hash function. `zksoroban` does not

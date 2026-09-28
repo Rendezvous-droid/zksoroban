@@ -108,3 +108,64 @@ test("error message includes out-of-range value truncated at 64 chars", () => {
       error.message.includes("…")
   );
 });
+
+const VALID_VK = {
+  protocol: "groth16",
+  curve: "bn254",
+  nPublic: 1,
+  vk_alpha_1: ["1", "2", "1"],
+  vk_beta_2: [["3", "4"], ["5", "6"], ["7", "8"]],
+  vk_gamma_2: [["9", "10"], ["11", "12"], ["13", "14"]],
+  vk_delta_2: [["15", "16"], ["17", "18"], ["19", "20"]],
+  vk_alphabeta_12: [],
+  IC: [["21", "22", "1"]]
+};
+
+test("formatProof validates public signal count when vk is provided", () => {
+  assert.throws(
+    () => formatProof(VALID_SNARKJS_PROOF, VALID_PUBLIC_SIGNALS, undefined, { ...VALID_VK, nPublic: 2 }),
+    (error: unknown) =>
+      error instanceof SorobanZkError &&
+      error.code === SorobanZkErrorCode.INVALID_PUBLIC_INPUT &&
+      error.message.includes("publicSignals count mismatch") &&
+      error.message.includes("expected 2") &&
+      error.message.includes("got 1")
+  );
+});
+
+test("formatProof validates under-count public signals when vk is provided", () => {
+  assert.throws(
+    () => formatProof(VALID_SNARKJS_PROOF, [], undefined, VALID_VK),
+    (error: unknown) =>
+      error instanceof SorobanZkError &&
+      error.code === SorobanZkErrorCode.INVALID_PUBLIC_INPUT &&
+      error.message.includes("expected 1") &&
+      error.message.includes("got 0")
+  );
+});
+
+test("formatProof validates over-count public signals when vk is provided", () => {
+  assert.throws(
+    () => formatProof(VALID_SNARKJS_PROOF, ["1", "2"], undefined, VALID_VK),
+    (error: unknown) =>
+      error instanceof SorobanZkError &&
+      error.code === SorobanZkErrorCode.INVALID_PUBLIC_INPUT &&
+      error.message.includes("expected 1") &&
+      error.message.includes("got 2")
+  );
+});
+
+test("formatProof passes when vk.nPublic matches publicSignals count", () => {
+  const result = formatProof(VALID_SNARKJS_PROOF, VALID_PUBLIC_SIGNALS, undefined, VALID_VK);
+  assert.equal(result.publicInputs.length, 1);
+});
+
+test("formatProof omits vk validation when vk is omitted (backward compatible)", () => {
+  // 2-arg call should still work without vk
+  const result = formatProof(VALID_SNARKJS_PROOF, VALID_PUBLIC_SIGNALS);
+  assert.equal(result.publicInputs.length, 1);
+
+  // 3-arg call with expiryLedger should still work without vk
+  const result2 = formatProof(VALID_SNARKJS_PROOF, VALID_PUBLIC_SIGNALS, 12345);
+  assert.equal(result2.publicInputs.length, 2);
+});

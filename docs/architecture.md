@@ -656,6 +656,24 @@ host rejects a hash that isn't already-uploaded code. The swap doesn't
 take effect until the current invocation finishes, so a contract can't
 upgrade itself mid-call and then keep running as the new code.
 
+### Emergency Pause
+
+`contracts/verifier` (only — `contracts/registry` doesn't have this)
+adds a `pause()`/`unpause()` admin-only toggle, per
+[zksoroban#44](https://github.com/yusufadeagbo/zksoroban/issues/44).
+While paused, `verify_proof` and `verify_batch` both reject every call
+with `Err(Error::ContractPaused)` as the very first thing they do —
+before `caller.require_auth()`, before touching rate-limit storage,
+before parsing anything. `is_paused()` (also surfaced on
+`get_config().paused`) is a public read-only getter, so monitoring
+doesn't need the admin's key to check current state.
+
+Nothing else is gated by this — `update_vk`, `upgrade`, `set_limits`,
+allowlist management, and the admin-transfer flow above all still work
+while paused, deliberately: those are exactly how a real incident
+actually gets fixed, and a pause that locked out its own remedy would
+turn an emergency stop into a permanent one.
+
 ### Out of scope (per #12)
 
 No timelock on either the handoff or the upgrade, no governance/voting,
