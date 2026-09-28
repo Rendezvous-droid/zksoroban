@@ -106,6 +106,109 @@ passes) while performing the length check once instead of twice, three
 times per `verify_proof`/per proof in `verify_batch` (`proof_a`,
 `proof_b`, `proof_c`).
 
+## CI Cost Regression Check
+
+[zksoroban#74](https://github.com/yusufadeagbo/zksoroban/issues/74) asked
+for a CI check that fails if `verify_proof`'s instruction cost regresses
+by more than 10% against a committed baseline — so a change that quietly
+doubles the cost of every verification gets caught before it merges,
+rather than being noticed later on a real network's fee bill.
+
+### Why this doesn't run `stellar contract invoke --cost` the way the issue describes
+
+The issue's acceptance criteria describes a script that "runs `soroban
+contract invoke --cost` on a known proof, parses the instruction count
+from output." Two things make that the wrong tool for a *CI* gate
+specifically, on top of what the "Contract verification cost" section
+above already found — that this CLI version's `--cost` output is a fee
+table, not a raw instruction count:
+
+- Getting a real number out of `stellar contract invoke` at all (see
+  above) means simulating against an actual RPC endpoint, which for a
+  reproducible, non-Testnet-dependent number means `stellar container
+  start local` — a Docker container CI would need to pull and boot on
+  every run. That's slow and adds a real flakiness surface (image pulls,
+  port/network readiness) to a check that runs on every PR.
+- It's also unnecessary: `soroban-sdk`'s testutils can register a
+  contract from its *compiled wasm bytes* directly
+  (`Env::register(wasm_bytes, args)`, not the `Env::register(ContractType,
+  args)` form `contracts/verifier/src/tests.rs`'s own unit tests use) and
+  run it through the real wasmi interpreter, entirely in-process — no
+  network, no Docker, no RPC. `env.cost_estimate().budget()` then reports
+  the same CPU-instruction cost a real invocation would, this time
+  *including* wasm-interpretation overhead, which registering the native
+  Rust `VerifierContract` type directly would skip entirely (confirmed
+  while building this: a native-type registration reports `WasmInsnExec:
+  0` — none of the compiled contract's own instructions get charged,
+  because there's no wasm being interpreted, just Rust function calls).
+
+`contracts/verifier/tests/cost_regression.rs` is exactly that: it reads
+the already-built `contracts/verifier/target/wasm32v1-none/release/
+zksoroban_verifier.wasm`, registers it, runs `verify_proof` against the
+same `poseidon_preimage` fixture the "Contract verification cost" section
+above uses, and compares `env.cost_estimate().budget().cpu_instruction_cost()`
+against `contracts/verifier/baseline-cost.json`.
+
+### Running it
+
+```bash
+make verifier-cost-check            # build the wasm, then check cost against the baseline
+make update-verifier-cost-baseline  # build the wasm, re-measure, and overwrite the baseline
+```
+
+Both build the release wasm first — the test panics with a clear message
+naming the missing file and the exact command to run if it isn't already
+built. CI's `contract` job runs `verifier-cost-check`'s two steps
+(build, then the regression test) right after the existing `cargo test`
+steps for all four contract crates.
+
+### Interpreting a failure
+
+A failing run prints the baseline, the actual measured cost, the delta in
+both absolute instructions and percent, and the max allowed value:
+
+```
+verify_proof instruction cost regressed by more than 10%:
+  baseline:    26720340 instructions
+  actual:      29500000 instructions
+  delta:       +2779660 instructions (+10.4%)
+  max allowed: 29392374 instructions (baseline + 10%)
+```
+
+If the regression is a real bug, fix it and re-run
+`make verifier-cost-check`. If it's an intentional tradeoff (a new
+feature that genuinely costs more, a security check worth the extra
+instructions), run `make update-verifier-cost-baseline`, commit the
+updated `contracts/verifier/baseline-cost.json`, and explain why in the
+PR — the same way the two-step admin transfer, `pause`, or the VK-update
+timelock each added real, deliberate cost for a real safety property.
+
+The check only ever fails *upward* — a cost decrease always passes, same
+as this issue's stated scope (regression detection, not a cost budget in
+either direction).
+
+### What this baseline is and isn't good for
+
+- **Good for**: catching a change to `contracts/verifier` itself (its
+  code, or a `soroban-sdk`/toolchain bump) that meaningfully increases
+  what a real `verify_proof` call costs.
+- **Not cross-machine normalized, on purpose** (explicitly out of scope
+  for #74): the absolute number in `baseline-cost.json` is specific to
+  this measurement method (wasm-interpreted, in-process, via
+  `soroban-sdk`'s testutils) and will differ from what
+  `stellar contract invoke --cost` reports against a real network for
+  the same proof (see the "Contract verification cost" section above —
+  those two methodologies measured 26,720,340 and 27,661,830
+  respectively for what should be equivalent calls, a ~3.5% difference
+  plausibly from resource-accounting differences between simulated and
+  in-process execution). That's fine for *regression detection* — the
+  same methodology run twice on the same code should reproduce the same
+  number — but don't treat this baseline as "the" instruction cost of
+  `verify_proof`; treat the network measurement in "Contract verification
+  cost" above as more representative of real on-chain cost, and this one
+  as the CI tripwire for a regression *from* whatever the last-committed
+  baseline was.
+
 ## Dual ESM/CJS build
 
 `sdk/` builds to three parallel outputs from the same `src/`:

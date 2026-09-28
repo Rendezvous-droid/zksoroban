@@ -31,10 +31,20 @@ jobs:
     steps:
       - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32v1-none
       - run: cargo test --manifest-path contracts/verifier-interface/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/verifier/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/registry/Cargo.toml --locked
       - run: cargo test --manifest-path contracts/examples/proof-gate/Cargo.toml --locked
+      # Runs after the contract tests above, per zksoroban#74 — needs the
+      # release wasm built first since the regression check measures the
+      # real compiled contract, not the native Rust test harness (see
+      # docs/performance.md's "CI Cost Regression Check").
+      - name: Build verifier release wasm
+        run: cargo build --manifest-path contracts/verifier/Cargo.toml --target wasm32v1-none --release --locked
+      - name: Verifier instruction-cost regression check
+        run: cargo test --manifest-path contracts/verifier/Cargo.toml --test cost_regression --locked
 
   circuits:
     runs-on: ubuntu-latest
