@@ -23,6 +23,10 @@ sense.
   `contracts/verifier/baseline-cost.json`'s baseline by more than 10%.
   `make verifier-cost-check` / `make update-verifier-cost-baseline` run
   it locally and refresh the baseline intentionally, respectively (#74).
+- **contracts**: admin-only `pause`/`unpause` on `contracts/verifier`, an
+  emergency stop that makes `verify_proof`/`verify_batch` reject every
+  call with `Error::ContractPaused` until unpaused, plus a public
+  `is_paused()` getter (#44).
 - **contracts**: two-step admin transfer (`propose_admin`/`accept_admin`)
   and self-upgrade (`upgrade`) for `contracts/verifier` and
   `contracts/registry`, so a deployed instance's logic can be replaced

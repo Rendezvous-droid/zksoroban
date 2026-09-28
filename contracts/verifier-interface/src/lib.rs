@@ -39,6 +39,7 @@ pub enum Error {
     CallerNotAllowed = 5,
     InvalidVerifyingKey = 6,
     NoPendingAdmin = 7,
+    ContractPaused = 8,
 }
 
 /// Cross-contract interface for a deployed `contracts/verifier` instance.
